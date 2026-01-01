@@ -1,0 +1,3 @@
+Albedo 1.0 1.0 1.0 1.0
+Fresnel 0.02 0.02 0.02
+Roughness 0.1
