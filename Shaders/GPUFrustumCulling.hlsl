@@ -10,6 +10,9 @@ struct SceneObjectData
 struct IndirectCommand
 {
     uint instanceId;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
 struct Plane
@@ -26,9 +29,9 @@ cbuffer cbRoot : register(b0)
     uint pad2;
 }
 
-StructuredBuffer<SceneObjectData> gObjectData : register(t0);
-StructuredBuffer<IndirectCommand> gCullingInputs : register(t1);
-StructuredBuffer<Plane> gFrustumPlanes : register(t2);
+StructuredBuffer<SceneObjectData> gObjectData : register(t0, space0);
+StructuredBuffer<IndirectCommand> gCullingInputs : register(t0, space1);
+StructuredBuffer<Plane> gFrustumPlanes : register(t0, space2);
 AppendStructuredBuffer<IndirectCommand> gCullingOutputs : register(u0);
 
 bool IsBoxInFrustum(float4 posW, float3 size)
@@ -55,11 +58,11 @@ void CS(uint3 DTid : SV_DispatchThreadID)
     uint instanceId = gCullingInputs[index].instanceId;
     if (instanceId < gCommandCount)
     {
-        IndirectCommand inputCmd = gCullingInputs[index];
-        SceneObjectData objData = gObjectData[index];
+        SceneObjectData objData = gObjectData[instanceId];
         bool isVisible = IsBoxInFrustum(objData.posW, objData.size);
         if (isVisible)
         {
+            IndirectCommand inputCmd = gCullingInputs[instanceId];
             gCullingOutputs.Append(inputCmd);
         }
     }

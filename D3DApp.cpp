@@ -31,7 +31,8 @@ D3DApp::~D3DApp()
 {
 	if (md3dDevice != nullptr)
 	{
-		FlushCommandQueue();
+		// FlushCommandQueue();
+		FlushAllCommandQueues();
 	}
 }
 
@@ -87,6 +88,8 @@ int D3DApp::Run()
 			{
 				CalculateFrameStats();
 				Update(mTimer);
+				// TODO : Run Compute work on a different thread
+				DoComputeWork(mTimer);
 				Draw(mTimer);
 			}
 			else
@@ -206,8 +209,8 @@ void D3DApp::OnResize()
 	CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(mDepthStencilBuffer.Get(),
 		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 	mCommandList->ResourceBarrier(1, &barrier);
-// 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mDepthStencilBuffer.Get(),
-// 		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE));
+	// 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mDepthStencilBuffer.Get(),
+	// 		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE));
 
 	ThrowIfFailed(mCommandList->Close());
 	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
@@ -410,52 +413,55 @@ bool D3DApp::InitDirect3D()
 	}
 #endif
 
-	ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&mdxgiFactory)));
+ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&mdxgiFactory)));
 
-	HRESULT hardwareResult = D3D12CreateDevice(
-		nullptr,
+HRESULT hardwareResult = D3D12CreateDevice(
+	nullptr,
+	D3D_FEATURE_LEVEL_11_0,
+	IID_PPV_ARGS(&md3dDevice));
+
+if (FAILED(hardwareResult))
+{
+	ComPtr<IDXGIAdapter> pWarpAdapter;
+	ThrowIfFailed(mdxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter)));
+
+	ThrowIfFailed(D3D12CreateDevice(
+		pWarpAdapter.Get(),
 		D3D_FEATURE_LEVEL_11_0,
-		IID_PPV_ARGS(&md3dDevice));
+		IID_PPV_ARGS(&md3dDevice)));
+}
 
-	if (FAILED(hardwareResult))
-	{
-		ComPtr<IDXGIAdapter> pWarpAdapter;
-		ThrowIfFailed(mdxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter)));
+ThrowIfFailed(md3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+	IID_PPV_ARGS(&mFence)));
 
-		ThrowIfFailed(D3D12CreateDevice(
-			pWarpAdapter.Get(),
-			D3D_FEATURE_LEVEL_11_0,
-			IID_PPV_ARGS(&md3dDevice)));
-	}
+ThrowIfFailed(md3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+	IID_PPV_ARGS(&mComputeFence)));
 
-	ThrowIfFailed(md3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-		IID_PPV_ARGS(&mFence)));
+mRtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+mDsvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+mCbvSrvUavDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-	mRtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	mDsvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-	mCbvSrvUavDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msQualityLevels;
+msQualityLevels.Format = mBackBufferFormat;
+msQualityLevels.SampleCount = 4;
+msQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+msQualityLevels.NumQualityLevels = 0;
+ThrowIfFailed(md3dDevice->CheckFeatureSupport(
+	D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+	&msQualityLevels,
+	sizeof(msQualityLevels)));
 
-	D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msQualityLevels;
-	msQualityLevels.Format = mBackBufferFormat;
-	msQualityLevels.SampleCount = 4;
-	msQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
-	msQualityLevels.NumQualityLevels = 0;
-	ThrowIfFailed(md3dDevice->CheckFeatureSupport(
-		D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
-		&msQualityLevels,
-		sizeof(msQualityLevels)));
-
-	m4xMsaaQuality = msQualityLevels.NumQualityLevels;
-	assert(m4xMsaaQuality > 0 && "Unexpected MSAA quality level.");
+m4xMsaaQuality = msQualityLevels.NumQualityLevels;
+assert(m4xMsaaQuality > 0 && "Unexpected MSAA quality level.");
 
 #ifdef _DEBUG
-	LogAdapters();
+LogAdapters();
 #endif
-	CreateCommandObjects();
-	CreateSwapChain();
-	CreateRtvAndDsvDescriptorHeaps();
+CreateCommandObjects();
+CreateSwapChain();
+CreateRtvAndDsvDescriptorHeaps();
 
-	return true;
+return true;
 }
 
 void D3DApp::CreateCommandObjects()
@@ -477,6 +483,24 @@ void D3DApp::CreateCommandObjects()
 		IID_PPV_ARGS(mCommandList.GetAddressOf())));
 
 	mCommandList->Close();
+
+	D3D12_COMMAND_QUEUE_DESC computeQueueDesc = {};
+	computeQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+	computeQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+	ThrowIfFailed(md3dDevice->CreateCommandQueue(&computeQueueDesc, IID_PPV_ARGS(&mComputeCommandQueue)));
+
+	ThrowIfFailed(md3dDevice->CreateCommandAllocator(
+		D3D12_COMMAND_LIST_TYPE_COMPUTE,
+		IID_PPV_ARGS(mComputeCmdListAlloc.GetAddressOf())));
+
+	ThrowIfFailed(md3dDevice->CreateCommandList(
+		0,
+		D3D12_COMMAND_LIST_TYPE_COMPUTE,
+		mComputeCmdListAlloc.Get(),
+		nullptr,
+		IID_PPV_ARGS(mComputeCommandList.GetAddressOf())));
+
+	mComputeCommandList->Close();
 }
 
 void D3DApp::CreateSwapChain()
@@ -506,6 +530,12 @@ void D3DApp::CreateSwapChain()
 		mSwapChain.GetAddressOf()));
 }
 
+void D3DApp::FlushAllCommandQueues()
+{
+	FlushCommandQueue();
+	FlushComputeCommandQueue();
+}
+
 void D3DApp::FlushCommandQueue()
 {
 	mCurrentFence++;
@@ -519,6 +549,22 @@ void D3DApp::FlushCommandQueue()
 
 		ThrowIfFailed(mFence->SetEventOnCompletion(mCurrentFence, eventHandle));
 
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
+	}
+}
+
+void D3DApp::FlushComputeCommandQueue()
+{
+	mCurrentComputeFence++;
+
+	ThrowIfFailed(mComputeCommandQueue->Signal(mComputeFence.Get(), mCurrentComputeFence));
+
+	if (mComputeFence->GetCompletedValue() < mCurrentComputeFence)
+	{
+		// HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
+		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
+		ThrowIfFailed(mComputeFence->SetEventOnCompletion(mCurrentComputeFence, eventHandle));
 		WaitForSingleObject(eventHandle, INFINITE);
 		CloseHandle(eventHandle);
 	}
@@ -598,7 +644,7 @@ void D3DApp::LogAdapters()
 
 void D3DApp::LogAdapterOutputs(IDXGIAdapter* adapter)
 {
-	UINT i = 0; 
+	UINT i = 0;
 	IDXGIOutput* output = nullptr;
 
 	while (adapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND)

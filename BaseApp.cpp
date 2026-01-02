@@ -37,16 +37,24 @@ bool BaseApp::Initialize()
 
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
+	ThrowIfFailed(mComputeCommandList->Reset(mComputeCmdListAlloc.Get(), nullptr));
+
 	Build();
 
 	// BuildWireFramePSOs();
 
 	ThrowIfFailed(mCommandList->Close());
 
+	ThrowIfFailed(mComputeCommandList->Close());
+
 	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
 	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
-	FlushCommandQueue();
+	ID3D12CommandList* computeCmdsLists[] = { mComputeCommandList.Get() };
+	mCommandQueue->ExecuteCommandLists(_countof(computeCmdsLists), computeCmdsLists);
+
+	// FlushCommandQueue();
+	FlushAllCommandQueues();
 
 	return true;
 }
@@ -77,6 +85,27 @@ void BaseApp::Update(const Timer& gt)
 	UpdateInstanceBuffer(gt);
 	UpdateMaterialBuffer(gt);
 	UpdateMainPassCB(gt);
+}
+
+void BaseApp::DoComputeWork(const Timer& gt)
+{
+	auto cmdListAlloc = mCurrFrameResource->ComputeCmdListAlloc;
+
+	ThrowIfFailed(cmdListAlloc->Reset());
+
+	ThrowIfFailed(mComputeCommandList->Reset(cmdListAlloc.Get(), nullptr));
+
+	// Set compute root signature
+	CullRenderItems();
+
+	ThrowIfFailed(mComputeCommandList->Close());
+
+	ID3D12CommandList* cmdsLists[] = { mComputeCommandList.Get() };
+	mComputeCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+
+	mCurrFrameResource->ComputeFence = ++mCurrentComputeFence;
+
+	mComputeCommandQueue->Signal(mComputeFence.Get(), mCurrentComputeFence);
 }
 
 void BaseApp::Draw(const Timer& gt)
@@ -122,6 +151,8 @@ void BaseApp::Draw(const Timer& gt)
 	mCommandList->ResourceBarrier(1, &toPresent);
 
 	ThrowIfFailed(mCommandList->Close());
+
+	mCommandQueue->Wait(mComputeFence.Get(), mCurrentComputeFence);
 
 	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
 	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
@@ -189,6 +220,10 @@ void BaseApp::OnKeyboardInput(const Timer& gt)
 	}
 
 	mCamera.UpdateViewMatrix();
+}
+
+void BaseApp::CullRenderItems()
+{
 }
 
 void BaseApp::UpdateInstanceBuffer(const Timer& gt)

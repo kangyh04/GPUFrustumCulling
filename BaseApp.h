@@ -21,6 +21,7 @@ public:
 
 	virtual void OnResize() override;
 	virtual void Update(const Timer& gt) override;
+	virtual void DoComputeWork(const Timer& gt) override;
 	virtual void Draw(const Timer& gt) override;
 
 	virtual void OnMouseDown(WPARAM btnState, int x, int y) override;
@@ -32,6 +33,7 @@ public:
 	virtual void OnKeyboardInput(const Timer& gt);
 
 	virtual void AnimateMaterials(const Timer& gt) {}
+	void CullRenderItems();
 	void UpdateInstanceBuffer(const Timer& gt);
 	void UpdateMaterialBuffer(const Timer& gt);
 	void UpdateMainPassCB(const Timer& gt);
@@ -63,6 +65,11 @@ protected:
 	ComPtr<ID3D12RootSignature> mCSRootSignature = nullptr;
 
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
+
+	ComPtr<ID3D12Resource> mSceneObjectBuffer = nullptr;
+	ComPtr<ID3D12Resource> mIndirectInputBuffer = nullptr;
+	ComPtr<ID3D12Resource> mIndirectOutputBuffer = nullptr;
+	ComPtr<ID3D12Resource> mPlaneBuffer = nullptr;
 
 	unordered_map<string, unique_ptr<MeshGeometry>> mGeometries;
 	unordered_map<string, unique_ptr<Texture>> mTextures;

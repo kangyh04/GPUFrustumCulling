@@ -18,6 +18,7 @@ protected:
 private:
 	void LoadTextures();
 	void LoadShapes();
+	void BuildCullingResources();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
 	void BuildShadersAndInputLayout();
@@ -58,7 +59,8 @@ GPUFrustumCullingApp::~GPUFrustumCullingApp()
 {
 	if (md3dDevice != nullptr)
 	{
-		FlushCommandQueue();
+		// FlushCommandQueue();
+		FlushAllCommandQueues();
 	}
 }
 
@@ -66,6 +68,7 @@ void GPUFrustumCullingApp::Build()
 {
 	LoadTextures();
 	LoadShapes();
+	BuildCullingResources();
 	BuildRootSignature();
 	BuildShadersAndInputLayout();
 	BuildMaterials();
@@ -124,6 +127,10 @@ void GPUFrustumCullingApp::LoadShapes()
 	mGeometries[mesh->Name] = move(mesh);
 }
 
+void GPUFrustumCullingApp::BuildCullingResources()
+{
+}
+
 void GPUFrustumCullingApp::BuildRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE texTable0;
@@ -135,8 +142,6 @@ void GPUFrustumCullingApp::BuildRootSignature()
 	CD3DX12_ROOT_PARAMETER slotRootParameter[4];
 
 	slotRootParameter[passCBRootParameterIndex].InitAsConstantBufferView(0);
-	// slotRootParameter[1].InitAsConstantBufferView(1);
-	// slotRootParameter[objRootParameterIndex].InitAsShaderResourceView(1, 1);
 	slotRootParameter[objRootParameterIndex].InitAsDescriptorTable(1, &objTable0);
 	slotRootParameter[matBufferRootParameterIndex].InitAsShaderResourceView(0, 1);
 	slotRootParameter[texRootParameterIndex].InitAsDescriptorTable(1, &texTable0, D3D12_SHADER_VISIBILITY_PIXEL);
@@ -168,7 +173,32 @@ void GPUFrustumCullingApp::BuildRootSignature()
 		serializedRootSig->GetBufferSize(),
 		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
 
-	// CD3DX12_ROOT_PARAMETER csSlotRootParameter[5];
+	CD3DX12_ROOT_PARAMETER csSlotRootParameter[5];
+	csSlotRootParameter[0].InitAsConstantBufferView(0);
+	csSlotRootParameter[1].InitAsShaderResourceView(0, 0);
+	csSlotRootParameter[2].InitAsShaderResourceView(0, 1);
+	csSlotRootParameter[3].InitAsShaderResourceView(0, 2);
+	csSlotRootParameter[4].InitAsUnorderedAccessView(0, 0);
+
+	CD3DX12_ROOT_SIGNATURE_DESC csRootSigDesc(5, csSlotRootParameter,
+		0, nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	hr = D3D12SerializeRootSignature(&csRootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+	{
+		OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+	}
+	ThrowIfFailed(hr);
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mCSRootSignature.GetAddressOf())));
 }
 
 void GPUFrustumCullingApp::BuildDescriptorHeaps()
@@ -230,11 +260,12 @@ void GPUFrustumCullingApp::BuildShadersAndInputLayout()
 		nullptr,
 		"PS",
 		"ps_5_1");
-// 	mShaders["cullCS"] = D3DUtil::CompileShader(
-// 		L"Shaders/GPUFrustumCulling.hlsl",
-// 		nullptr,
-// 		"CS",
-// 		"cs_5_0");
+
+	mShaders["cullCS"] = D3DUtil::CompileShader(
+		L"Shaders/GPUFrustumCulling.hlsl",
+		nullptr,
+		"CS",
+		"cs_5_1");
 
 	mStdInputLayout =
 	{
@@ -358,19 +389,16 @@ void GPUFrustumCullingApp::BuildPSOs()
 	opaquePsoDesc.DSVFormat = mDepthStencilFormat;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 		&opaquePsoDesc, IID_PPV_ARGS(&mPSOs["opaque"])));
-// 	auto opaquePsoDesc = PSOUtil::MakeOpaquePSODesc(
-// 		mShaders["standardVS"].Get(),
-// 		mShaders["opaquePS"].Get(),
-// 		mStdInputLayout,
-// 		mRootSignature.Get(),
-// 		mBackBufferFormat,
-// 		mDepthStencilFormat,
-// 		m4xMsaaState,
-// 		m4xMsaaQuality);
-// 
-// 	mPsoDescs["opaque"] = opaquePsoDesc;
-// 
-// 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
-// 		&opaquePsoDesc,
-// 		IID_PPV_ARGS(&mPSOs["opaque"])));
+
+	D3D12_COMPUTE_PIPELINE_STATE_DESC cullPsoDesc;
+	ZeroMemory(&cullPsoDesc, sizeof(D3D12_COMPUTE_PIPELINE_STATE_DESC));
+	cullPsoDesc.pRootSignature = mCSRootSignature.Get();
+	cullPsoDesc.CS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["cullCS"]->GetBufferPointer()),
+		mShaders["cullCS"]->GetBufferSize()
+	};
+	cullPsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+	ThrowIfFailed(md3dDevice->CreateComputePipelineState(
+		&cullPsoDesc, IID_PPV_ARGS(&mPSOs["cull"])));
 }

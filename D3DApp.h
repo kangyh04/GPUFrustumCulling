@@ -38,6 +38,7 @@ protected:
 	virtual void CreateRtvAndDsvDescriptorHeaps();
 	virtual void OnResize();
 	virtual void Update(const Timer& gt) = 0;
+	virtual void DoComputeWork(const Timer& gt) = 0;
 	virtual void Draw(const Timer& gt) = 0;
 
 	virtual void OnMouseDown(WPARAM btnState, int x, int y) {}
@@ -52,7 +53,9 @@ protected:
 	void CreateCommandObjects();
 	void CreateSwapChain();
 
+	void FlushAllCommandQueues();
 	void FlushCommandQueue();
+	void FlushComputeCommandQueue();
 
 	ID3D12Resource* CurrentBackBuffer() const;
 	D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView() const;
@@ -85,11 +88,16 @@ protected:
 	ComPtr<ID3D12Device> md3dDevice;
 
 	ComPtr<ID3D12Fence> mFence;
+	ComPtr<ID3D12Fence> mComputeFence;
 	UINT64 mCurrentFence = 0;
+	UINT64 mCurrentComputeFence = 0;
 
 	ComPtr<ID3D12CommandQueue> mCommandQueue;
+	ComPtr<ID3D12CommandQueue> mComputeCommandQueue;
 	ComPtr<ID3D12CommandAllocator> mDirectCmdListAlloc;
+	ComPtr<ID3D12CommandAllocator> mComputeCmdListAlloc;
 	ComPtr<ID3D12GraphicsCommandList> mCommandList;
+	ComPtr<ID3D12GraphicsCommandList> mComputeCommandList;
 
 	static const int SwapChainBufferCount = 2;
 	int mCurrBackBuffer = 0;
