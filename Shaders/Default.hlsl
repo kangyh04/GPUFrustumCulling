@@ -23,7 +23,8 @@ struct ObjectData
     float4 ObjPad3;
 };
 
-StructuredBuffer<ObjectData> gObjectData : register(t1, space1);
+StructuredBuffer<ObjectData> gObjectData : register(t0, space2);
+StructuredBuffer<uint> gVisibilityData : register(t0, space3);
 
 struct VertexIn
 {
@@ -44,9 +45,10 @@ struct VertexOut
 
 VertexOut VS(VertexIn vin, uint instanceID : SV_InstanceID)
 {
+    uint visibleId = gVisibilityData[instanceID];
     VertexOut vout = (VertexOut) 0.0f;
 
-    ObjectData objData = gObjectData[instanceID];
+    ObjectData objData = gObjectData[visibleId];
     float4x4 world = objData.World;
     float4x4 texTransform = objData.TexTransform;
     uint matIndex = objData.MaterialIndex;

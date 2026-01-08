@@ -6,6 +6,7 @@
 #include "Camera.h"
 #include "FrustumCulling.h"
 #include "CubeRenderTarget.h"
+#include "GPUFrustumCulling.h"
 
 const UINT CubeMapSize = 512;
 
@@ -60,6 +61,7 @@ protected:
 	UINT matBufferRootParameterIndex = 2;
 	UINT passCBRootParameterIndex = 0;
 	UINT texRootParameterIndex = 3;
+	UINT visibilityRootParameterIndex = 4;
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mCSRootSignature = nullptr;
@@ -90,5 +92,8 @@ protected:
 	Camera mCamera;
 
 	POINT mLastMousePos;
+
+	vector<unique_ptr<GPUFrustumCulling>> mCullers;
+	GPUFrustumCulling* mCurrCuller;
 };
 

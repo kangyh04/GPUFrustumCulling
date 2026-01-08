@@ -25,6 +25,7 @@ private:
 	void BuildMaterials();
 	void BuildRenderItems();
 	void BuildFrameResources();
+	void BuildGPUCullers();
 	void BuildPSOs();
 };
 
@@ -74,6 +75,7 @@ void GPUFrustumCullingApp::Build()
 	BuildMaterials();
 	BuildRenderItems();
 	BuildFrameResources();
+	BuildGPUCullers();
 	BuildDescriptorHeaps();
 	BuildPSOs();
 }
@@ -136,19 +138,17 @@ void GPUFrustumCullingApp::BuildRootSignature()
 	CD3DX12_DESCRIPTOR_RANGE texTable0;
 	texTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0);
 
-	CD3DX12_DESCRIPTOR_RANGE objTable0;
-	objTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 1);
-
-	CD3DX12_ROOT_PARAMETER slotRootParameter[4];
+	CD3DX12_ROOT_PARAMETER slotRootParameter[5];
 
 	slotRootParameter[passCBRootParameterIndex].InitAsConstantBufferView(0);
-	slotRootParameter[objRootParameterIndex].InitAsDescriptorTable(1, &objTable0);
+	slotRootParameter[objRootParameterIndex].InitAsShaderResourceView(0, 2);
 	slotRootParameter[matBufferRootParameterIndex].InitAsShaderResourceView(0, 1);
 	slotRootParameter[texRootParameterIndex].InitAsDescriptorTable(1, &texTable0, D3D12_SHADER_VISIBILITY_PIXEL);
+	slotRootParameter[visibilityRootParameterIndex].InitAsShaderResourceView(0, 3);
 
 	auto staticSamplers = StaticSampler::GetStaticSamplers();
 
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter,
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(size(slotRootParameter), slotRootParameter,
 		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -172,33 +172,6 @@ void GPUFrustumCullingApp::BuildRootSignature()
 		serializedRootSig->GetBufferPointer(),
 		serializedRootSig->GetBufferSize(),
 		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
-
-	CD3DX12_ROOT_PARAMETER csSlotRootParameter[5];
-	csSlotRootParameter[0].InitAsConstantBufferView(0);
-	csSlotRootParameter[1].InitAsShaderResourceView(0, 0);
-	csSlotRootParameter[2].InitAsShaderResourceView(0, 1);
-	csSlotRootParameter[3].InitAsShaderResourceView(0, 2);
-	csSlotRootParameter[4].InitAsUnorderedAccessView(0, 0);
-
-	CD3DX12_ROOT_SIGNATURE_DESC csRootSigDesc(5, csSlotRootParameter,
-		0, nullptr,
-		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-	hr = D3D12SerializeRootSignature(&csRootSigDesc,
-		D3D_ROOT_SIGNATURE_VERSION_1,
-		serializedRootSig.GetAddressOf(),
-		errorBlob.GetAddressOf());
-
-	if (errorBlob != nullptr)
-	{
-		OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-	}
-	ThrowIfFailed(hr);
-	ThrowIfFailed(md3dDevice->CreateRootSignature(
-		0,
-		serializedRootSig->GetBufferPointer(),
-		serializedRootSig->GetBufferSize(),
-		IID_PPV_ARGS(mCSRootSignature.GetAddressOf())));
 }
 
 void GPUFrustumCullingApp::BuildDescriptorHeaps()
@@ -230,22 +203,6 @@ void GPUFrustumCullingApp::BuildDescriptorHeaps()
 			hDescriptor);
 		hDescriptor.Offset(1, mCbvSrvDescriptorSize);
 	}
-
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-	for (int i = 0; i < gNumFrameResources; ++i)
-	{
-		srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-		srvDesc.Buffer.FirstElement = 0;
-		srvDesc.Buffer.NumElements = (UINT)mAllRitems[0]->Instances.size();
-		srvDesc.Buffer.StructureByteStride = sizeof(ObjectData);
-		srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-		auto instanceBuffer = mFrameResources[i]->ObjectCB->Resource();
-		md3dDevice->CreateShaderResourceView(
-			instanceBuffer,
-			&srvDesc,
-			hDescriptor);
-		hDescriptor.Offset(1, mCbvSrvDescriptorSize);
-	}
 }
 
 void GPUFrustumCullingApp::BuildShadersAndInputLayout()
@@ -260,12 +217,6 @@ void GPUFrustumCullingApp::BuildShadersAndInputLayout()
 		nullptr,
 		"PS",
 		"ps_5_1");
-
-	mShaders["cullCS"] = D3DUtil::CompileShader(
-		L"Shaders/GPUFrustumCulling.hlsl",
-		nullptr,
-		"CS",
-		"cs_5_1");
 
 	mStdInputLayout =
 	{
@@ -361,6 +312,37 @@ void GPUFrustumCullingApp::BuildFrameResources()
 	}
 }
 
+void GPUFrustumCullingApp::BuildGPUCullers()
+{
+	for (int i = 0; i < gNumFrameResources; ++i)
+	{
+		vector<IndirectCommand> commands;
+		auto culler = make_unique<GPUFrustumCulling>();
+
+		culler->Build(md3dDevice.Get(), mRootSignature.Get());
+
+		for (auto& e : mAllRitems)
+		{
+			IndirectCommand command;
+
+			command.vertexView = e->Geo->VertexBufferView();
+			command.indexView = e->Geo->IndexBufferView();
+
+			command.drawArgument.BaseVertexLocation = 0;
+			command.drawArgument.IndexCountPerInstance = e->IndexCount;
+			command.drawArgument.InstanceCount = 0;
+			command.drawArgument.StartIndexLocation = 0;
+			command.drawArgument.StartInstanceLocation = 0;
+
+			commands.push_back(command);
+		}
+
+		culler->UpdateIndirectCommand(commands);
+
+		mCullers.push_back(move(culler));
+	}
+}
+
 void GPUFrustumCullingApp::BuildPSOs()
 {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
@@ -389,16 +371,4 @@ void GPUFrustumCullingApp::BuildPSOs()
 	opaquePsoDesc.DSVFormat = mDepthStencilFormat;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 		&opaquePsoDesc, IID_PPV_ARGS(&mPSOs["opaque"])));
-
-	D3D12_COMPUTE_PIPELINE_STATE_DESC cullPsoDesc;
-	ZeroMemory(&cullPsoDesc, sizeof(D3D12_COMPUTE_PIPELINE_STATE_DESC));
-	cullPsoDesc.pRootSignature = mCSRootSignature.Get();
-	cullPsoDesc.CS =
-	{
-		reinterpret_cast<BYTE*>(mShaders["cullCS"]->GetBufferPointer()),
-		mShaders["cullCS"]->GetBufferSize()
-	};
-	cullPsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-	ThrowIfFailed(md3dDevice->CreateComputePipelineState(
-		&cullPsoDesc, IID_PPV_ARGS(&mPSOs["cull"])));
 }

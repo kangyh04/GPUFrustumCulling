@@ -72,6 +72,7 @@ void BaseApp::Update(const Timer& gt)
 
 	mCurrFrameResourceIndex = (mCurrFrameResourceIndex + 1) % gNumFrameResources;
 	mCurrFrameResource = mFrameResources[mCurrFrameResourceIndex].get();
+	mCurrCuller = mCullers[mCurrFrameResourceIndex].get();
 
 	if (mCurrFrameResource->Fence != 0 && mFence->GetCompletedValue() < mCurrFrameResource->Fence)
 	{
@@ -89,7 +90,7 @@ void BaseApp::Update(const Timer& gt)
 
 void BaseApp::DoComputeWork(const Timer& gt)
 {
-	auto cmdListAlloc = mCurrFrameResource->ComputeCmdListAlloc;
+	auto cmdListAlloc = mCurrCuller->CommandAllocator();
 
 	ThrowIfFailed(cmdListAlloc->Reset());
 
@@ -224,6 +225,29 @@ void BaseApp::OnKeyboardInput(const Timer& gt)
 
 void BaseApp::CullRenderItems()
 {
+	auto view = mCamera.GetView();
+	auto proj = mCamera.GetProj();
+	auto viewProj = XMMatrixMultiply(view, proj);
+
+	vector<SceneObjectData> sceneObjectDatas;
+
+	for (auto& e : mAllRitems)
+	{
+		for (auto& instance : e->Instances)
+		{
+			SceneObjectData sceneObjectData;
+			XMMATRIX world = XMLoadFloat4x4(&instance.World);
+			sceneObjectData.WorldPosition = XMFLOAT4(instance.World._41, instance.World._42, instance.World._43, instance.World._44);
+			sceneObjectData.Size = e->Bounds.Extents;
+			sceneObjectDatas.push_back(sceneObjectData);
+		}
+	}
+
+	mCurrCuller->CullSceneObjects(
+		md3dDevice.Get(),
+		mComputeCommandList.Get(),
+		viewProj,
+		sceneObjectDatas);
 }
 
 void BaseApp::UpdateInstanceBuffer(const Timer& gt)
@@ -316,26 +340,14 @@ void BaseApp::UpdateMainPassCB(const Timer& gt)
 void BaseApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const vector<RenderItem*>& ritems)
 {
 	auto objectCB = mCurrFrameResource->ObjectCB->Resource();
-	// cmdList->SetGraphicsRootShaderResourceView(0, objectCB->GetGPUVirtualAddress());
-	auto heap = mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
-	UINT texOffset = (UINT)mTextures.size();
-	UINT offset = texOffset + mCurrFrameResourceIndex;
-	CD3DX12_GPU_DESCRIPTOR_HANDLE objHandle(heap, offset, mCbvSrvDescriptorSize);
 
-	cmdList->SetGraphicsRootDescriptorTable(objRootParameterIndex, objHandle);
+	cmdList->SetGraphicsRootShaderResourceView(objRootParameterIndex, objectCB->GetGPUVirtualAddress());
 
-	for (size_t i = 0; i < ritems.size(); ++i)
-	{
-		auto ri = ritems[i];
+	auto visibilityBuffer = mCurrCuller->GetVisibilityResource();
 
-		auto vertexBufferView = ri->Geo->VertexBufferView();
-		auto indexBufferView = ri->Geo->IndexBufferView();
-		cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
-		cmdList->IASetIndexBuffer(&indexBufferView);
-		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
+	cmdList->SetGraphicsRootShaderResourceView(visibilityRootParameterIndex, visibilityBuffer->GetGPUVirtualAddress());
 
-		cmdList->DrawIndexedInstanced(ri->IndexCount, ri->InstanceCount, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
-	}
+	cmdList->ExecuteIndirect(mCurrCuller->GetCommandSignature(), (UINT)mCurrCuller->CountBuffer()->Count, mCurrCuller->GetIndirectBuffer(), 0, nullptr, 0);
 }
 
 void BaseApp::BuildWireFramePSOs()

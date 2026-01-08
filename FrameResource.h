@@ -92,7 +92,6 @@ struct FrameResource
 	~FrameResource();
 
 	ComPtr<ID3D12CommandAllocator> CmdListAlloc;
-	ComPtr<ID3D12CommandAllocator> ComputeCmdListAlloc;
 
 	unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
 	unique_ptr<UploadBuffer<ObjectData>> ObjectCB = nullptr;

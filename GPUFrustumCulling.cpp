@@ -1,82 +1,19 @@
 #include "GPUFrustumCulling.h"
 
-void GPUFrustumCulling::BuildResources(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, vector<IndirectCommand> sceneObjectCommand)
+void GPUFrustumCulling::Build(ID3D12Device* device, ID3D12RootSignature* graphicsRootSig)
 {
-	auto sceneObjectCount = static_cast<UINT>(sceneObjectCommand.size());
-	auto byteSize = sizeof(IndirectCommand) * sceneObjectCount;
-
 	ThrowIfFailed(device->CreateCommandAllocator(
-		D3D12_COMMAND_LIST_TYPE_DIRECT,
+		D3D12_COMMAND_LIST_TYPE_COMPUTE,
 		IID_PPV_ARGS(mCommandAllocator.GetAddressOf())));
 
-	mSceneObjectBuffer = make_unique<UploadBuffer<SceneObjectData>>(device, sceneObjectCount, false);
-	mFrustumPlaneBuffer = make_unique<UploadBuffer<Plane>>(device, PlaneCount, false);
-	mCountBuffer = make_unique<UploadBuffer<CountCommand>>(device, 1, true);
-
-	auto defaultHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-	auto indirectInputBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(byteSize);
-
-	ThrowIfFailed(device->CreateCommittedResource(
-		&defaultHeapProps,
-		D3D12_HEAP_FLAG_NONE,
-		&indirectInputBufferDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr,
-		IID_PPV_ARGS(&mIndirectInputCommandBuffer)));
-
-	auto updateHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-
-	auto uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(byteSize);
-
-	ThrowIfFailed(device->CreateCommittedResource(
-		&updateHeapProps,
-		D3D12_HEAP_FLAG_NONE,
-		&uploadBufferDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr,
-		IID_PPV_ARGS(&mIndirectInputUploadBuffer)));
-
-	void* data = nullptr;
-	ThrowIfFailed(mIndirectInputUploadBuffer->Map(0, nullptr, &data));
-	memcpy(data, sceneObjectCommand.data(), byteSize);
-	mIndirectInputUploadBuffer->Unmap(0, nullptr);
-
-	auto toCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
-		mIndirectInputCommandBuffer.Get(),
-		D3D12_RESOURCE_STATE_GENERIC_READ,
-		D3D12_RESOURCE_STATE_COPY_DEST);
-
-	commandList->ResourceBarrier(1, &toCopyDest);
-
-	commandList->CopyBufferRegion(
-		mIndirectInputCommandBuffer.Get(),
-		0,
-		mIndirectInputUploadBuffer.Get(),
-		0,
-		byteSize);
-
-	auto toGenericRead = CD3DX12_RESOURCE_BARRIER::Transition(
-		mIndirectInputCommandBuffer.Get(),
-		D3D12_RESOURCE_STATE_COPY_DEST,
-		D3D12_RESOURCE_STATE_GENERIC_READ);
-
-	commandList->ResourceBarrier(1, &toGenericRead);
-
-	auto indirectOutputBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
-		byteSize,
-		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-	ThrowIfFailed(device->CreateCommittedResource(
-		&defaultHeapProps,
-		D3D12_HEAP_FLAG_NONE,
-		&indirectOutputBufferDesc,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-		nullptr,
-		IID_PPV_ARGS(&mIndirectOutputCommandBuffer)));
+	BuildRootSignature(device);
+	BuildComputeShader();
+	BuildCommandSignature(device, graphicsRootSig);
+	BuildIndirectCommandBuffer(device);
+	BuildPSO(device);
 }
 
-void GPUFrustumCulling::UpdateSceneObjectBuffer(ID3D12Device* device, const vector<SceneObjectData>& sceneObjects)
+void GPUFrustumCulling::UpdateSceneObjectBuffer(const vector<SceneObjectData>& sceneObjects)
 {
 	for (UINT i = 0; i < sceneObjects.size(); ++i)
 	{
@@ -84,7 +21,7 @@ void GPUFrustumCulling::UpdateSceneObjectBuffer(ID3D12Device* device, const vect
 	}
 }
 
-void GPUFrustumCulling::UpdateFrustumPlaneBuffer(ID3D12Device* device, const XMMATRIX viewProj)
+void GPUFrustumCulling::UpdateFrustumPlaneBuffer(const XMMATRIX& viewProj)
 {
 	vector<Plane> frustumPlanes;
 	ExtractPlanes(viewProj, frustumPlanes);
@@ -94,8 +31,75 @@ void GPUFrustumCulling::UpdateFrustumPlaneBuffer(ID3D12Device* device, const XMM
 	}
 }
 
-void GPUFrustumCulling::CullSceneObjects(ID3D12GraphicsCommandList* cmdList, UINT sceneObjectCount, ID3D12Resource* indirectInputCommandBuffer, ID3D12Resource* indirectOutputCommandBuffer)
+void GPUFrustumCulling::UpdateIndirectCommand(const vector<IndirectCommand> commands)
 {
+	for (UINT i = 0; i < commands.size(); ++i)
+	{
+		mIndirectResetBuffer->CopyData(i, commands[i]);
+	}
+	mCountBuffer->Count = commands.size();
+}
+
+void GPUFrustumCulling::CullSceneObjects(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const XMMATRIX& viewProjMatrix, const vector<SceneObjectData>& sceneObjects)
+{
+	UpdateSceneObjectBuffer(sceneObjects);
+	UpdateFrustumPlaneBuffer(viewProjMatrix);
+
+	cmdList->SetPipelineState(mPSO.Get());
+
+	cmdList->SetComputeRootSignature(mRootSignature.Get());
+
+	cmdList->SetComputeRoot32BitConstants(0, 1, reinterpret_cast<void*>(&mCountBuffer->Count), 0);
+
+	cmdList->SetComputeRootShaderResourceView(1, mSceneObjectBuffer->Resource()->GetGPUVirtualAddress());
+
+	cmdList->SetComputeRootShaderResourceView(2, mFrustumPlaneBuffer->Resource()->GetGPUVirtualAddress());
+
+	auto toCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+		mIndirectBuffer.Get(),
+		D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+		D3D12_RESOURCE_STATE_COPY_DEST);
+
+	cmdList->ResourceBarrier(1, &toCopy);
+
+	cmdList->CopyBufferRegion(mIndirectBuffer.Get(), 0, mIndirectResetBuffer->Resource(), 0, sizeof(IndirectCommand) * MaximumCommandAmount);
+
+	CD3DX12_RESOURCE_BARRIER toCSState[2];
+
+	toCSState[0] = CD3DX12_RESOURCE_BARRIER::Transition(
+		mIndirectBuffer.Get(),
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+	toCSState[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+		mIndirectOutputVisibilityBuffer.Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+	cmdList->ResourceBarrier(size(toCSState), toCSState);
+
+	cmdList->SetComputeRootUnorderedAccessView(3, mIndirectBuffer->GetGPUVirtualAddress());
+
+	cmdList->SetComputeRootUnorderedAccessView(4, mIndirectOutputVisibilityBuffer->GetGPUVirtualAddress());
+
+	cmdList->Dispatch(
+		(UINT)ceilf((float)sceneObjects.size() / ThreadGroupSize),
+		1,
+		1);
+
+	CD3DX12_RESOURCE_BARRIER toDrawState[2];
+
+	toDrawState[0] = CD3DX12_RESOURCE_BARRIER::Transition(
+		mIndirectBuffer.Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+
+	toDrawState[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+		mIndirectOutputVisibilityBuffer.Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+	cmdList->ResourceBarrier(size(toDrawState), toDrawState);
 }
 
 void GPUFrustumCulling::ExtractPlanes(const XMMATRIX& viewProjMatrix, vector<Plane>& planes)
@@ -143,4 +147,115 @@ void GPUFrustumCulling::ExtractPlanes(const XMMATRIX& viewProjMatrix, vector<Pla
 		plane.Distance = XMVectorGetW(normalizedPlane);
 		planes.push_back(plane);
 	}
+}
+
+void GPUFrustumCulling::BuildRootSignature(ID3D12Device* device)
+{
+	CD3DX12_ROOT_PARAMETER csSlotRootParameter[5];
+	csSlotRootParameter[0].InitAsConstantBufferView(0); // cb for command
+	csSlotRootParameter[1].InitAsShaderResourceView(0, 0); // srv for object transform
+	csSlotRootParameter[2].InitAsShaderResourceView(0, 1); // srv for planes
+	csSlotRootParameter[3].InitAsUnorderedAccessView(1); // uav for output and input
+	csSlotRootParameter[4].InitAsUnorderedAccessView(0); // uav for visibility
+
+	CD3DX12_ROOT_SIGNATURE_DESC csRootSigDesc(size(csSlotRootParameter), csSlotRootParameter,
+		0, nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+
+	HRESULT hr = D3D12SerializeRootSignature(&csRootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+	{
+		OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+	}
+	ThrowIfFailed(hr);
+	ThrowIfFailed(device->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
+}
+
+void GPUFrustumCulling::BuildComputeShader()
+{
+	mCSShaderByteCode = D3DUtil::CompileShader(L"Shaders\\GPUFrustumCulling.hlsl", nullptr, "CS", "cs_5_1");
+}
+
+void GPUFrustumCulling::BuildCommandSignature(ID3D12Device* device, ID3D12RootSignature* graphicsRootSignature)
+{
+	D3D12_INDIRECT_ARGUMENT_DESC argDescs[3] = {};
+	argDescs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+	argDescs[0].VertexBuffer.Slot = 0;
+	argDescs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
+	argDescs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+	D3D12_COMMAND_SIGNATURE_DESC commandSigDesc = {};
+	commandSigDesc.pArgumentDescs = argDescs;
+	commandSigDesc.NumArgumentDescs = size(argDescs);
+	commandSigDesc.ByteStride = sizeof(IndirectCommand);
+
+	ThrowIfFailed(device->CreateCommandSignature(&commandSigDesc, graphicsRootSignature, IID_PPV_ARGS(mCommandSignature.GetAddressOf())));
+}
+
+void GPUFrustumCulling::BuildIndirectCommandBuffer(ID3D12Device* device)
+{
+	auto sceneObjectCount = MaximumObjectAmountPerCommand;
+	auto byteSize = CommandSizePerFrame;
+
+	ThrowIfFailed(device->CreateCommandAllocator(
+		D3D12_COMMAND_LIST_TYPE_DIRECT,
+		IID_PPV_ARGS(mCommandAllocator.GetAddressOf())));
+
+	mSceneObjectBuffer = make_unique<UploadBuffer<SceneObjectData>>(device, MaximumObjectAmount, false);
+	mFrustumPlaneBuffer = make_unique<UploadBuffer<Plane>>(device, PlaneCount, false);
+	mIndirectResetBuffer = make_unique<UploadBuffer<IndirectCommand>>(device, MaximumCommandAmount, false);
+	// mIndirectBuffer = make_unique<UploadBuffer<IndirectCommand>>(device, MaximumCommandAmount, false);
+	mCountBuffer = make_unique<CountCommand>();
+	mCountBuffer->Count = sceneObjectCount;
+
+	auto defaultHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+	auto uavDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(IndirectCommand) * MaximumCommandAmount,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+	ThrowIfFailed(device->CreateCommittedResource(
+		&defaultHeapProps,
+		D3D12_HEAP_FLAG_NONE,
+		&uavDesc,
+		D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+		nullptr,
+		IID_PPV_ARGS(mIndirectBuffer.GetAddressOf())));
+
+	// Create Output Visibility
+	auto visibilityBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+		MaximumObjectAmount,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+	ThrowIfFailed(device->CreateCommittedResource(
+		&defaultHeapProps,
+		D3D12_HEAP_FLAG_NONE,
+		&visibilityBufferDesc,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		nullptr,
+		IID_PPV_ARGS(&mIndirectOutputVisibilityBuffer)));
+}
+
+void GPUFrustumCulling::BuildPSO(ID3D12Device* device)
+{
+	D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
+	computePsoDesc.pRootSignature = mRootSignature.Get();
+	computePsoDesc.CS =
+	{
+		reinterpret_cast<BYTE*>(mCSShaderByteCode->GetBufferPointer()),
+		mCSShaderByteCode->GetBufferSize()
+	};
+	computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+	ThrowIfFailed(device->CreateComputePipelineState(
+		&computePsoDesc,
+		IID_PPV_ARGS(&mPSO)));
 }

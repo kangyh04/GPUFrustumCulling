@@ -71,6 +71,12 @@ public:
 		return (byteSize + 255) & ~255;
 	}
 
+	static constexpr UINT AlignForUAVCounter(UINT bufferSize)
+	{
+		constexpr UINT alignment = D3D12_UAV_COUNTER_PLACEMENT_ALIGNMENT;
+		return (bufferSize + (alignment - 1)) & ~(alignment - 1);
+	}
+
 	static Microsoft::WRL::ComPtr<ID3DBlob> LoadBinary(const std::wstring& filename);
 
 	static Microsoft::WRL::ComPtr<ID3D12Resource> CreateDefaultBuffer(
