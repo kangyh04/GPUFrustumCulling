@@ -132,6 +132,7 @@
     <ClCompile Include="FrameResource.cpp" />
     <ClCompile Include="FrustumCulling.cpp" />
     <ClCompile Include="GeometryGenerator.cpp" />
+    <ClCompile Include="GPUFrustumCulling.cpp" />
     <ClCompile Include="GPUFrustumCullingApp.cpp" />
     <ClCompile Include="Input.cpp" />
     <ClCompile Include="MathHelper.cpp" />
@@ -150,6 +151,7 @@
     <ClInclude Include="FrameWave.h" />
     <ClInclude Include="FrustumCulling.h" />
     <ClInclude Include="GeometryGenerator.h" />
+    <ClInclude Include="GPUFrustumCulling.h" />
     <ClInclude Include="Input.h" />
     <ClInclude Include="LandUtility.h" />
     <ClInclude Include="MaterialUtil.h" />

@@ -256,9 +256,11 @@ void GPUFrustumCullingApp::BuildRenderItems()
 	skullRitem->Mat = mMaterials["defaultMat"].get();
 	skullRitem->Geo = mGeometries["skull"].get();
 	skullRitem->PrimitiveType = D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	skullRitem->InstanceCount = 0;
 	skullRitem->IndexCount = skullRitem->Geo->DrawArgs["skull"].IndexCount;
 	skullRitem->StartIndexLocation = skullRitem->Geo->DrawArgs["skull"].StartIndexLocation;
 	skullRitem->BaseVertexLocation = skullRitem->Geo->DrawArgs["skull"].BaseVertexLocation;
+	skullRitem->Bounds = skullRitem->Geo->DrawArgs["skull"].Bounds;
 
 	constexpr int n = 5;
 	auto instanceCount = n * n * n;
